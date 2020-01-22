@@ -564,8 +564,10 @@ void setup() {
   }
 
   // startup mqtt connection
+#ifdef HAVE_MQTTS
   tlsClient = new BearSSL::WiFiClientSecure();
   mqtt_client.setClient(*tlsClient);
+#endif // HAVE_MQTTS
   mqtt_client.setServer(mqtt_server, mqtt_port);
   mqtt_client.setCallback(mqttCallback);
   mqttConnect();
