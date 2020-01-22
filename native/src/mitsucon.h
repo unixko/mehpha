@@ -1,13 +1,29 @@
 /*
  * Copyright notice goes here
  */
+// Home Assistant Mitsubishi Electric Heat Pump Controller https://github.com/unixko/mehpha
+// using native MQTT Climate (HVAC) component with MQTT discovery for automatic configuration
 
+// NB: Set PubSubClient.h MQTT_MAX_PACKET_SIZE to 1280
+
+/****************************************************************************/
+/* Some #define's to change the behaviour of your installation              */
+/****************************************************************************/
+
+/* define ESP32 if your board is an ESP32, leave it undef if your board is an ESP8266 */
 //#define ESP32
 #undef ESP32
+
+/* define OTA to support ArduinoOTA (Over The Air) image loading */
+/* NB: this seems to conflict with HAVE_MQTTS for me */
 //#define OTA
 #undef OTA
+
+/* define HAVE_LEDS if you have a red LED and a blue LED on separate pins */
 #define HAVE_LEDS
 //#undef HAVE_LEDS
+
+/* define HAVE_RGB_LED if you have a WS2812-like "NeoPixel" RGB LED on one pin */
 //#define HAVE_RGB_LED 1
 #undef HAVE_RGB_LED
 
@@ -18,28 +34,30 @@
 //#define SERIAL_IS_DEBUG 1
 #undef SERIAL_IS_DEBUG
 
-//const char* ota_password = "<YOUR OTA PASSWORD GOES HERE>";
+/* define HAVE_MQTTS to support encrypted MQTT, leave it undef for plain-text insecure MQTT */
+/* Note the ESP8266 is a touch underpowered, so MQTTS might be a big ask. More comments below */
+//#define HAVE_MQTTS
+#undef HAVE_MQTTS
+
 
 // wifi settings
 const char* ssid     = "<YOUR WIFI SSID GOES HERE>";
 const char* password = "<YOUR WIFI PASSWORD GOES HERE>";
 
+// ArduinoOTA settings
+const char* ota_password  = "<YOUR OTA PASSWORD GOES HERE>";
+
+// Network Time Protocol - requires HAVE_MQTTS
+const char* ntp_server1   = "nz.pool.ntp.org"; // a nearby NTP server
+const char* ntp_server2   = "time.nist.gov";   // a distant USian NTP server
+const int ntp_time_offset = 3600 * 12; // NZST = UTC + 12h, convert to seconds
+const int ntp_dst_offset  = 3600 * 1;  // NZDT = NZST + 1h, convert to seconds
+
 // mqtt server settings
-const char* mqtt_server   = "<YOUR MQTT BROKER IP/HOSTNAME GOES HERE>"; // note that MQTTS prefers FQDN over IP.dot.quad
+const char* mqtt_server   = "<YOUR MQTT BROKER HOSTNAME GOES HERE>"; // note that MQTTS prefers FQDN over IP.dot.quad
 const int mqtt_port       = 1883; // typically 1883 for MQTT, 8883 for MQTTS
 const char* mqtt_username = "<YOUR MQTT USERNAME GOES HERE>";
 const char* mqtt_password = "<YOUR MQTT PASSWORD GOES HERE>";
-
-//#define MQTTS
-#undef MQTTS
-
-// Home Assistant Mitsubishi Electric Heat Pump Controller https://github.com/unixko/mehpha
-// using native MQTT Climate (HVAC) component with MQTT discovery for automatic configuration
-// Set PubSubClient.h MQTT_MAX_PACKET_SIZE to 1280
-
-//enable or disable OTA and OTA password
-//#define OTA
-const char* ota_password  = "OTA_PASSWORD";
 
 /* MQTTS Certificate Fingerprint
  * So the ESP8266 in particular is a touch underpowered
@@ -53,39 +71,39 @@ const char* ota_password  = "OTA_PASSWORD";
  * openssl x509 -in CERT.pem -noout -sha1 -fingerprint | tr ':' ' '
  * (or you could use sed instead of tr)
  */
-const char* mqtt_fingerprint = "00 11 22 33 44 55 66 77 88 99 a0 b1 c2 d3 e4 f5 66 77 88 99";
-
+const char* mqtt_fingerprint = "00 11 22 33 44 55 66 77 88 99 a0 b1 c2 d3 e4 f5 66 77 88 99"; // <YOUR MQTT X.509 FINGERPRINT GOES THERE>
 
 // mqtt client settings
-// Change "heatpump" to be same on all lines
-const char* ha_entity_id                        = "Lounge Heat Pump"; // Device Name displayed in Home Assistant
-const char* client_id                           = "lohp"; // WiFi hostname, OTA hostname, MQTT hostname
-const char* heatpump_topic                      = "hp/lohp"; // MQTT topic, must be unique between heat pump unit
-//const char* heatpump_availability_topic         = "hp/lohp/tele/lwt";
-const char* heatpump_state_topic                = "hp/lohp/tele/stat";
-const char* heatpump_temperature_topic          = "hp/lohp/tele/temp";
-const char* heatpump_led_topic                  = "hp/lohp/tele/led";
-const char* heatpump_attribute_topic            = "hp/lohp/tele/attr";
-const char* heatpump_mode_command_topic         = "hp/lohp/cmnd/mode";
-const char* heatpump_temperature_command_topic  = "hp/lohp/cmnd/temp";
-const char* heatpump_led_command_topic          = "hp/lohp/cmnd/led";
-const char* heatpump_fan_mode_command_topic     = "hp/lohp/cmnd/fan";
-const char* heatpump_swing_mode_command_topic   = "hp/lohp/cmnd/vane";
-const char* heatpump_debug_topic                = "hp/lohp/debug";
+// We define parts of the string using quotes and #define with small whitespace to concatenate the strings together
+// then we can use the tokens in the char* declarations to mean we only have to change two lines - these two - when compiling for a different heatpump 
+#define C_CLIENT_ID "<YOUR TOPIC TOKEN GOES HERE>"
+const char* ha_entity_id                        = "<ROOM> Heat Pump"; // Device Name displayed in Home Assistant
 
-// using a similar structure to Tasmota to make all my Last-Wills easier to find
-const char* heatpump_lastwill_topic     = "tele/lohp/LWT";
+const char* client_id                           = C_CLIENT_ID; // WiFi hostname, OTA hostname, MQTT hostname
+#define C_TOPIC_PREFIX "hp/" C_CLIENT_ID 
+const char* heatpump_topic                      = C_TOPIC_PREFIX; // MQTT topic, must be unique between heat pump unit
+const char* heatpump_availability_topic         = C_TOPIC_PREFIX "/tele/LWT";
+const char* heatpump_state_topic                = C_TOPIC_PREFIX "/tele/stat";
+const char* heatpump_temperature_topic          = C_TOPIC_PREFIX "/tele/temp";
+const char* heatpump_led_topic                  = C_TOPIC_PREFIX "/tele/led";
+const char* heatpump_attribute_topic            = C_TOPIC_PREFIX "/tele/attr";
+const char* heatpump_mode_command_topic         = C_TOPIC_PREFIX "/cmnd/mode";
+const char* heatpump_temperature_command_topic  = C_TOPIC_PREFIX "/cmnd/temp";
+const char* heatpump_led_command_topic          = C_TOPIC_PREFIX "/cmnd/led";
+const char* heatpump_fan_mode_command_topic     = C_TOPIC_PREFIX "/cmnd/fan";
+const char* heatpump_swing_mode_command_topic   = C_TOPIC_PREFIX "/cmnd/vane";
+const char* heatpump_debug_topic                = C_TOPIC_PREFIX "/debug";
+
 const char* heatpump_lastwill_message   = "Offline";
 const char* heatpump_online_message     = "Online";
 
-// Customization
+// Customisation
 const char* min_temp                    = "16"; // Minimum temperature, check value from heatpump remote control
 const char* max_temp                    = "31"; // Maximum temperature, check value from heatpump remote control
 const char* temp_step                   = "1"; // Temperature setting step, check value from heatpump remote control
 const char* mqtt_discov_prefix          = "homeassistant"; // Home Assistant MQTT Discovery Prefix
 
-
-// pinouts
+// ESP8266 pinouts
 const int redLedPin  = 0; // Onboard LED = digital pin 0 (red LED on adafruit ESP8266 huzzah)
 const int blueLedPin = 2; // Onboard LED = digital pin 0 (blue LED on adafruit ESP8266 huzzah)
 
