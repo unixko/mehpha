@@ -49,7 +49,7 @@ unsigned long lastTempSend;
 unsigned long lastLEDShow;
 uint16_t debugcount;
 
-const char* controller_sw_version       = "20200119-1800"; // Software Version displayed in Home Assistant
+const char* controller_sw_version       = "20200228-2200"; // Software Version displayed in Home Assistant
 
 // debug mode, when true, will send all packets received from the heatpump to topic heatpump_debug_topic
 // this can also be set by sending "on" to heatpump_debug_set_topic
@@ -128,42 +128,32 @@ void mqttConnect() {
   while (!mqtt_client.connected()) {
     // Attempt to connect
     dbgprintln("attempt mqtt connect");
-    bool victory = false;
 #ifdef HAVE_MQTTS
+    // Set the verification to be Fingerprint of X.509 certificate
+    // and set the verification to use THIS given fingerprint
     tlsClient->setFingerprint( mqtt_fingerprint);
     setClock(); // NB: does not always include Daylight Savings.
 #endif // HAVE_MQTTS
 
     //dbgprintf("attempt mqtt connect( %s, %s, %s, %s, 1, true, %s)\n", client_id, mqtt_username, mqtt_password, heatpump_availability_topic, heatpump_lastwill_message);
+    // With MQTTS, the connect() call only succeeds if the verification passes. Wrong fingerprint means execute the else clause below
     if (mqtt_client.connect(client_id, mqtt_username, mqtt_password, heatpump_availability_topic, 1, true, heatpump_lastwill_message)) {
       dbgprintln("mqtt reports connected");
-#ifdef HAVE_MQTTS
-      // this function gets marked as Deprecated. Not sure. Probably the "setFingerprint" above makes this one redundant?
-      if (tlsClient->verify(mqtt_fingerprint, mqtt_server)) { // note the FQDN. It should match the certificate, eh?
-        dbgprintln("certificate matches");
-        victory=true;
-      } else {
-        dbgprintln("certificate no match");
-        victory=false;
-      }
-#else // not HAVE_MQTTS
-      victory=true;
-#endif // HAVE_MQTTS / not
-    }
-    if( victory ) {
-        mqtt_client.setCallback(mqttCallback);
-        mqtt_client.publish(heatpump_availability_topic,heatpump_online_message, true);
-        mqtt_client.subscribe(heatpump_mode_command_topic);
-        mqtt_client.subscribe(heatpump_temperature_command_topic);
+      mqtt_client.setCallback(mqttCallback);
+      mqtt_client.publish(heatpump_availability_topic,heatpump_online_message, true);
+      mqtt_client.subscribe(heatpump_mode_command_topic);
+      mqtt_client.subscribe(heatpump_temperature_command_topic);
 #ifdef HAVE_RGB_LED
-        mqtt_client.subscribe(heatpump_led_command_topic);
+      mqtt_client.subscribe(heatpump_led_command_topic);
 #endif // HAVE_RGB_LED
-        mqtt_client.subscribe(heatpump_fan_mode_command_topic);
-        mqtt_client.subscribe(heatpump_swing_mode_command_topic);
+      mqtt_client.subscribe(heatpump_fan_mode_command_topic);
+      mqtt_client.subscribe(heatpump_swing_mode_command_topic);
+      // [FEB20] upstream has this publish here
+      //mqtt_client.publish(heatpump_availability_topic, heatpump_online_message, true);
     } else {
       // Wait 5 seconds before retrying
       dbgprintln("mqtt fail and pause");
-      delay(5000);
+      delay(5000); // Fixme: this ruins ArduinoOTA
     }
   }
 }
@@ -204,10 +194,11 @@ void mqttAutoDiscovery() {
     swing_modes.add("5");
     swing_modes.add("swing");
     // 19 Jan 2020, Home Assistant marks the unit as always "Unavailble" because it advertises LWT. So let us not advertise it
+    // [FEB20] upstream has the advertisement of avty back in, but no pl_avail / pl_not_avail.
   //rootDiscovery["avty_t"]              = "~/tele/LWT";
   //rootDiscovery["pl_avail"]            = heatpump_online_message;
   //rootDiscovery["pl_not_avail"]        = heatpump_lastwill_message;
-  rootDiscovery["curr_temp_t"]         = "~/tele/temp";
+  rootDiscovery["curr_temp_t"]         = "~/tele/curr";
   rootDiscovery["curr_temp_tpl"]       = "{{ value_json.roomTemperature }}";
   rootDiscovery["mode_cmd_t"]          = "~/cmnd/mode";
   rootDiscovery["mode_stat_t"]         = "~/tele/stat";
@@ -221,6 +212,8 @@ void mqttAutoDiscovery() {
   rootDiscovery["swing_mode_cmd_t"]    = "~/cmnd/vane";
   rootDiscovery["swing_mode_stat_t"]   = "~/tele/stat";
   rootDiscovery["swing_mode_stat_tpl"] = "{{ value_json.vane | lower }}";
+  rootDiscovery["act_t"]               = "~/tele/curr";
+  rootDiscovery["act_tpl"]             = "{%set hp='climate.'+value_json.name|lower|replace(' ','_')%}{%if states(hp)=='off'%}off{%elif states(hp)=='fan'%}fan{%elif value_json.operating==false%}idle{%elif states(hp)=='heat'%}heating{%elif states(hp)=='cool' %}cooling{%elif states(hp)=='dry' %}drying{%elif states(hp)=='heat_cool'and(state_attr(hp,'temperature')-state_attr(hp,'current_temperature')>0)%}heating{%elif states(hp)=='heat_cool'and(state_attr(hp,'temperature')-state_attr(hp,'current_temperature')<0)%}cooling{%endif%}";
   rootDiscovery["json_attr_t"]         = "~/tele/attr";
   JsonObject device                    = rootDiscovery.createNestedObject("device");
     device["name"]                     = ha_entity_id;
@@ -231,7 +224,7 @@ void mqttAutoDiscovery() {
     device["sw"]                       = controller_sw_version;
 
   size_t __attribute__((unused)) serzlen;
-  char bufferDiscovery[1280];
+  char bufferDiscovery[2048];
   serzlen = serializeJson(rootDiscovery, bufferDiscovery);
 
   if (!mqtt_client.publish(mqtt_discov_topic.c_str(), bufferDiscovery, true)) {
@@ -279,18 +272,20 @@ void hpStatusChanged(heatpumpStatus currentStatus) {
   dbgprintln("  entrypoint hpStatusChanged()");
 
   // Publish Temperature alone
-  const size_t bufferSizeInfo = JSON_OBJECT_SIZE(2); // 1 key + 1 value
+  const size_t bufferSizeInfo = JSON_OBJECT_SIZE(6); // 3 keys + 3 values
   DynamicJsonDocument rootInfo(bufferSizeInfo);
 
+  rootInfo["name"]            = ha_entity_id;
   rootInfo["roomTemperature"] = currentStatus.roomTemperature;
+  rootInfo["operating"]       = currentStatus.operating;
 
   size_t __attribute__((unused)) serzlen;
   char bufferInfo[512];
   serzlen = serializeJson(rootInfo, bufferInfo);
 
-  if (!mqtt_client.publish(heatpump_temperature_topic, bufferInfo, true)) {
-    mqtt_client.publish(heatpump_debug_topic, "failed to publish TEMP topic");
-    dbgprintf("fail publish room temp, length=%u buffer=%s\n", serzlen, bufferInfo);
+  if (!mqtt_client.publish(heatpump_current_topic, bufferInfo, true)) {
+    mqtt_client.publish(heatpump_debug_topic, "failed to publish CURR topic");
+    dbgprintf("fail publish curr room temp, length=%u buffer=%s\n", serzlen, bufferInfo);
   }
 
 #ifdef HAVE_RGB_LED
@@ -318,7 +313,7 @@ void hpStatusChanged(heatpumpStatus currentStatus) {
   const size_t bufferSizeTimers = JSON_OBJECT_SIZE(12); // 6 keys + 6 values
   DynamicJsonDocument rootTimers(bufferSizeTimers);
 
-  rootTimers["hvac_action"]      = currentStatus.operating;
+  rootTimers["hvac_action"]      = currentStatus.operating; // not in upstream
   rootTimers["timer_set"]        = currentStatus.timers.mode;
   rootTimers["timer_on_mins"]    = currentStatus.timers.onMinutesSet;
   rootTimers["timer_on_remain"]  = currentStatus.timers.onMinutesRemaining;
@@ -333,6 +328,7 @@ void hpStatusChanged(heatpumpStatus currentStatus) {
     dbgprintf("fail publish attr, length=%u buffer=%s\n", serzlen, bufferTimers);
   }
 
+  // [FEB20] upstream has this publish here
   //mqtt_client.publish(heatpump_availability_topic, heatpump_online_message, true);
   //dbgprintln("  exitpoint hpStatusChanged()");  
 }
@@ -559,7 +555,7 @@ void setup() {
     delay(250);
 #else // not HAVE_LEDS
     dbgprintln("Wifi: Loop without connection");
-    delay(1200);
+    delay(1500); // delay is okay, as no ArduinoOTA without WiFi anyway
 #endif // HAVE_LEDS / not
   }
 
@@ -582,13 +578,23 @@ void setup() {
   hp.setPacketCallback(hpPacketDebug);
 
 #ifdef OTA
-#if 0
   ArduinoOTA.setHostname(client_id);
   ArduinoOTA.setPassword(ota_password);
-  ArduinoOTA.begin(false);
-#else // always
-  ArduinoOTA.begin(WiFi.localIP(), client_id, ota_password, InternalStorage);
-#endif // never / always
+  ArduinoOTA.onStart([]() {
+    dbgprintln("\nOTA: Start");
+    // Fixme: Publish on MQTT that OTA update failed
+  });
+  ArduinoOTA.onEnd([]() {
+    dbgprintln("\nOTA: End");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    dbgprintf("OTA: Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    // Fixme: Publish on MQTT that OTA update failed
+    dbgprintf("OTA: Error[%u]: ", error);
+  });
+  ArduinoOTA.begin(false); // no mDNS
 #endif // OTA
 
   dbgprintln("hp.connect call here");
